@@ -1,0 +1,925 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use v5.10.1;
+
+use Cwd qw/abs_path getcwd/;
+use File::Basename;
+use File::Path qw/rmtree/;
+use FindBin;
+use Getopt::Long;
+use Imager;
+use List::MoreUtils qw/firstidx/;
+use List::Util;
+use Pod::Usage;
+use Time::Piece;
+use XML::LibXML;
+use XML::Simple;
+
+# globals
+
+my $chip_width;
+my $chip_height;
+my @probe_list;
+my @probe_sets;
+my $flow_sequence;
+my @probe_maps;
+my $probe_counter = 1;
+my $out_dir      = undef;
+my $fn_container = undef;
+my $fn_fiducial  = undef;
+my $fn_xml       = undef;
+my $fn_xsd       = undef;
+my $verbose      = 0;
+my $emulate      = 0;
+my $print_first  = 0;
+my $help         = 0;
+
+our $PROGRAM = 'maskmaker';
+our $VERSION = '0.2a';
+
+GetOptions(
+
+    'config=s'   => \$fn_xml,
+    'out=s'      => \$out_dir,
+    'flow:s'     => \$flow_sequence,
+    'emulate'    => \$emulate,
+    'verbose'    => \$verbose,
+    'help'       => \$help,
+    'version'    => sub { print "This is $PROGRAM version $VERSION\n";exit; },
+
+);
+
+
+# basic input checking
+pod2usage( -verbose => 2) if ($help);
+pod2usage( -msg => 'ERROR: Config file required' )
+    if (! -f $fn_xml);
+pod2usage( -msg => 'ERROR: Output directory required' )
+    if (! defined $out_dir);
+
+# check for existing output directory, ask for overwrite, and create
+if (-e $out_dir) {
+    local $| = 1;
+    print "Output directory $out_dir exists. Overwrite? (WARNING:"
+      . " this cannot be undone) [yN]: ";
+    my $reply = <STDIN>;
+    chomp $reply;
+    if ($reply !~ /^y$/i) {
+        print "Will not overwrite. Exiting...\n";
+        exit;
+    }
+    rmtree $out_dir;
+}
+mkdir $out_dir;
+
+# XSD validation
+$fn_xsd = "$FindBin::Bin/mask_gen.xsd";
+if (! -r $fn_xsd) {
+    warn "The XSD schema is not present or readable. XSD validation will be
+    skipped\n";
+}
+else {
+    my $schema = XML::LibXML::Schema->new( location => $fn_xsd );
+    my $parser = XML::LibXML->new();
+    my $doc = $parser->parse_file($fn_xml);
+    eval{
+        $schema->validate($doc);
+    };
+    if (ref($@)) {
+        my @msgs;
+        my $err = $@;
+        while (defined $err) {
+            unshift @msgs, $err->message if ($err->__prev_depth % 2 == 0);
+            $err = $err->_prev;
+        }
+        warn "ERROR: The following errors were found when validating the config file:\n";
+        warn $_ for (@msgs);
+        exit(1);
+    }
+    elsif ($@) {
+       die("$@\n");
+    }
+}
+
+# all paths in config file should be absolute or relative to the config file
+my $cwd = getcwd;
+my ($xml_base, $xml_path) = fileparse( abs_path($fn_xml) );
+
+# parse XML metadata
+my $meta = XMLin($fn_xml);
+#reformat boolean values and make tags case-insensitive
+for (keys %{ $meta }) {
+    $meta->{$_} =~ s/^yes$/1/i;
+    $meta->{$_} =~ s/^no$/0/i;
+    $meta->{lc $_} = delete $meta->{$_};
+}
+push @probe_list, uc $meta->{fiducialsequence};
+$meta->{pattern} = $meta->{pattern} eq '1:1' ? 0
+                 : $meta->{pattern} eq '1:2' ? 1
+                 : $meta->{pattern} eq '1:4' ? 2
+                 : undef;
+die "ERROR: Invalid pattern specified in config file\n"
+    if (! defined $meta->{pattern});
+
+$fn_container = $meta->{main};
+$fn_container =~ s/^(?=[^\/\\])/$xml_path/;
+$fn_fiducial  = $meta->{fiducialdata} if ($meta->{isfiducialimage});
+$fn_fiducial  =~ s/^(?=[^\/\\])/$xml_path/;
+pod2usage( -msg => "ERROR: Missing container mask $fn_container" )
+    if (! -f $fn_container);
+pod2usage( -msg => 'ERROR: Missing fiducial mask' )
+    if (! -f $fn_fiducial);
+
+
+# read images into piddles
+warn "Reading images...\n";
+
+# use homebrew image->PDL routine for Windows compatibility
+my $img_cont = Imager->new( file => $fn_container );
+my $img_fid  = Imager->new( file => $fn_fiducial  );
+
+$chip_width  = $img_cont->getwidth;
+$chip_height = $img_cont->getheight;
+my $fid_width  = $img_fid->getwidth;
+my $fid_height = $img_fid->getheight;
+die "ERROR: Mask size mismatch"
+    if ($chip_width != $fid_width || $chip_height != $fid_height);
+
+# force true bitmap arra
+my @containers = parse_containers( $img_cont );
+my @fiducials  = parse_fiducials(  $img_fid  );
+
+
+# read probe sequences into memory
+warn "parsing probes...\n";
+
+for ($meta->{seqtype}) {
+    
+    when ('Text') {
+        push @probe_list, uc $meta->{sequence};
+        my $set = [ ['', uc $meta->{sequence}] ];
+        $probe_sets[$_] = $set for (0..$#containers);
+    }
+    when ('File') {
+        my $fn_probes = $meta->{sequence};
+        $fn_probes =~ s/^(?=[^\/\\])/$xml_path/;
+        my $set = parse_probes( $fn_probes, $meta->{seqtag} );
+        die "ERROR: Probe count doesn't match container count for SeqType=File"
+            if (scalar @{ $set } != scalar @containers);
+        push @probe_list, map {$_->[1]} @{ $set };
+        $probe_sets[$_] = [ $set->[$_] ] for (0..$#containers);
+    }
+    when ('MFile') {
+        my $fn_probes = $meta->{sequence};
+        $fn_probes =~ s/^(?=[^\/\\])/$xml_path/;
+        open my $infile, '<', $fn_probes
+            or die "Error opening <Sequence> file for reading";
+        for (0..$#containers) {
+            my $filename = <$infile>;
+            die "Too few filenames for SeqType=MFile" if (! defined $filename);
+            $filename =~ s/\r*\n$//; # cross-platform chomp
+            $filename =~ s/^(?=[^\/\\])/$xml_path/;
+            $probe_sets[$_] = parse_probes( $filename, $meta->{seqtag} );
+            push @probe_list, map {$_->[1]} @{ $probe_sets[$_] };
+        }
+        die "Too many filesnames for SeqType=MFile"
+            if (! eof $infile);
+    }
+    when ('File2') {
+        my $fn_probes = $meta->{sequence};
+        $fn_probes =~ s/^(?=[^\/\\])/$xml_path/;
+        my $set = parse_probes( $fn_probes, $meta->{seqtag} );
+        push @probe_list, map {$_->[1]} @{ $set };
+        $probe_sets[$_] = $set for (0..$#containers);
+    }
+}
+
+
+# calculate optimal amide flow if not given on command line
+if (! defined $flow_sequence) {
+    warn "Calculating optimal flow...\n";
+    @probe_list = List::MoreUtils::uniq @probe_list;
+    my @used = qw/A C G T/;
+
+    # include special chars if necessary
+    if ($meta->{extendedmode}) {
+        my $extra_string = $meta->{extendedchar} // '';
+        push @used, split( '', $extra_string );
+    }
+
+    my @new;
+    for (@probe_list) {
+
+        $_ = reverse $_ if (! $emulate);
+        $_ = uc $meta->{linker} . $_;
+        my $l = length $_;
+
+    }
+
+    my @remaining = grep {length($_) > 0} @probe_list;
+    while (@remaining) {
+        my $base_used;
+
+        my $longest;
+        my @choices;
+        my @bases;
+        for (0..$#remaining) {
+            my $probe = $remaining[$_];
+            my $len = length $probe;
+            my $base = substr $probe, 0, 1;
+            if (! defined $longest || $len > $longest) {
+                @choices = ($_);
+                @bases   = ($base);
+                $longest = $len;
+            }
+            elsif ($len == $longest) {
+                push @choices, $_;
+                push @bases,   $base;
+            }
+        }
+        my @pos = map {my $c = $_; firstidx {$_ eq $c} @used} @bases;
+        my $to_use;
+        my $highest;
+        for (0..$#pos) {
+            if (! defined $highest || $pos[$_] > $highest) {
+                $to_use = $_;
+                $highest = $pos[$_];
+            }
+        }
+        $base_used = $bases[$to_use];
+        unshift @used, $base_used;
+
+        $flow_sequence .= $base_used;
+        for my $probe (@remaining) {
+            my $base = substr $probe, 0, 1;
+            next if ($base ne $base_used); 
+            $base = substr $probe, 0, 1, '';
+
+        }
+        @remaining = grep {length($_) > 0} @remaining;
+        my $c = scalar @remaining;
+    }
+
+    my $actual_flow = length $flow_sequence;
+    warn "flows: $actual_flow\n";
+}
+
+# map probes to container coordinates
+for (0..$#containers) {
+    my $w = $containers[$_]->[2];
+    my $h = $containers[$_]->[3];
+
+    # randomize if asked (but only once if SeqType=File2)
+    if ($meta->{randomize}) {
+        if ($meta->{seqtype} eq 'MFile'
+          || ($meta->{seqtype} eq 'File2' && $_ == 0)) {
+            @{ $probe_sets[$_] } = List::Util::shuffle @{ $probe_sets[$_] };
+        }
+    }
+
+    my $probe_count = scalar @{ $probe_sets[$_] };
+    my $i = 0;
+    my $x = 0;
+    SPOT:
+    while ($x < $w) {
+        my $y = $meta->{pattern} == 1 ? $x % 2 : 0;
+        while ($y < $h) {
+            if ($i >= $probe_count) { # no more probes left
+                last SPOT if (! $meta->{fillcontainer});
+                $i = 0;
+            }
+            $probe_maps[$_] = [] if (! defined $probe_maps[$_]);
+            $probe_maps[$_]->[$x] = [] if (! defined $probe_maps[$_]->[$x]);
+            $probe_maps[$_]->[$x]->[$y] = $emulate ? [$i,0] : [$i,-1];
+            $y += $meta->{pattern} ? 2 : 1;
+            ++$i;
+        }
+        my $shift = $meta->{pattern} == 2 ? 2 : 1;
+        $x += $shift;
+    }
+}
+
+open my $display, '>:crlf', "$out_dir/Display_Script.txt";
+my $t = localtime;
+my $datestr = $t->mon . $t->mday;
+my $fn_ndf = $emulate ? "$meta->{title}_${datestr}_Design.NDF" : 'layout.ndf';
+open my $ndf, '>', "$out_dir/$fn_ndf";
+my @headers = qw/
+    PROBE_DESIGN_ID
+    CONTAINER
+    DESIGN_NOTE
+    SELECTION_CRITERIA
+    SEQ_ID
+    PROBE_SEQUENCE
+    MISMATCH
+    MATCH_INDEX
+    FEATURE_ID
+    ROW_NUM
+    COL_NUM
+    PROBE_CLASS
+    PROBE_ID
+    POSITION
+    DESIGN_ID
+    X
+    Y
+    DMD
+/;
+print {$ndf} join("\t",@headers), "\n";
+
+FLOW:
+for my $flow (1..length($flow_sequence)) {
+    warn "flow seq $flow\n";
+    my $flow_base = substr $flow_sequence, $flow-1, 1;
+    my $image_name = "MASK_${flow}_$flow_base.bmp";
+    
+    #skip first flow for compatability, although I still don't understand why
+    if ($print_first || $flow > 1) {
+        # to ensure downstream compatability, force CRLF ending (\015\012)
+        print {$display} 'display ', $image_name, " $meta->{exposuretime}\n";
+    }
+
+    # create B/W image (will be written as BMP)
+    my $img = Imager->new(
+        xsize     => $chip_width,
+        ysize     => $chip_height,
+        channels  => 1,
+        type      => 'paletted',
+        maxcolors => 2,
+    );
+    my @colors = (Imager::Color->new(0,0,0),
+                Imager::Color->new(255,255,255),
+                );
+    $img->addcolors(colors => \@colors);
+    # set background to black
+    $img->box(filled => 1, color => $colors[0]);
+
+    # fetch x,y of pixels to be painted
+    my @xs;
+    my @ys;
+
+    my $probe_base;
+    if (length $meta->{linker} > 0) {
+        $probe_base = substr $meta->{linker}, 0, 1, '';
+    }
+
+    #fiducials
+
+    # only once, write fiducial data to NDF
+    if ($flow == 1) {
+        for (@fiducials) {
+            my $x = $_->[0] + 1;
+            my $y = $_->[1] + 1;
+            
+            # the image is reversed during MAS synthesis, so X and Y should
+            # be swapped in the NDF output. This was a bug in the previous
+            # MaskGen software and is fixed here unless 'emulate' mode is on
+            ($x,$y) = ($y,$x) if (! $emulate);
+
+            print {$ndf} "$meta->{title}_$_->[0]_$_->[1]\t";
+            print {$ndf} "Fiducial\t\t\tFiducial\t";
+            print {$ndf} $meta->{fiducialsequence}, "\t\t";
+            print {$ndf} $probe_counter++, "\t\t\t\t";
+            print {$ndf} "fiducial\tFiducial\t\t";
+            print {$ndf} $meta->{title}, "\t";
+            print {$ndf} "$x\t$y\t\n";
+        }
+    }
+
+    my $fid_base = $probe_base;
+    if (! defined $fid_base && length($meta->{fiducialsequence}) > 0) {
+        my $p = $emulate ? 0 : -1;
+        if (substr($meta->{fiducialsequence}, $p, 1) eq $flow_base) {
+            $fid_base = substr $meta->{fiducialsequence}, $p, 1, '';
+        }
+    }
+    if (defined $fid_base) {
+        for (@fiducials) {
+            push @xs, $_->[0];
+            push @ys, $_->[1];
+
+        }
+    }
+
+    for (0..$#containers) {
+        my $cont_name = $meta->{containername} . '_' . ($_+1);
+        my ($x_offset,$y_offset,$w,$h) = @{ $containers[$_] };
+        for my $x (0..$w-1) {
+            Y:
+            for my $y (0..$h-1) {
+                next Y if (! defined $probe_maps[$_]->[$x]->[$y]);
+                my $tmp_base = $probe_base;
+                # only once, write experimental data to NDF
+                if ($flow == 1) {
+                    my ($index,$pos) = @{ $probe_maps[$_]->[$x]->[$y] };
+                    my $row = $y + 1;
+                    my $col = $x + 1;
+                    my $x2 = $x_offset + $x + 1;
+                    my $y2 = $y_offset + $y + 1;
+
+                    # the image is reversed during MAS synthesis, so X and Y should
+                    # be swapped in the NDF output. This was a bug in the previous
+                    # MaskGen software and is fixed here unless 'emulate' mode is on
+                    if (! $emulate) {
+                        ($x2,$y2) = ($y2,$x2);
+                        ($row,$col) = ($col,$row);
+                    }
+                    print {$ndf} "$meta->{title}_${x}_$y\t";
+                    print {$ndf} "$cont_name\t\t\t";
+                    print {$ndf} "$probe_sets[$_]->[$index]->[0]\t";
+                    print {$ndf} "$probe_sets[$_]->[$index]->[1]\t\t";
+                    print {$ndf} $probe_counter++, "\t\t";
+                    print {$ndf} "$row\t$col\t";
+                    print {$ndf} "experimental\t";
+                    print {$ndf} "$probe_sets[$_]->[$index]->[0]\t\t";
+                    print {$ndf} $meta->{title}, "\t";
+                    print {$ndf} "$x2\t$y2\t\n";
+                }
+
+                # TODO: optimize this block
+                if (! defined $tmp_base) {
+                    my ($index,$pos) = @{ $probe_maps[$_]->[$x]->[$y] };
+                    my $probe = $probe_sets[$_]->[$index]->[1];
+                    my $cmp = $emulate ? $pos + 1 : $pos * -1;
+                    next Y if ($cmp > length($probe));
+                    $tmp_base = substr $probe, $pos, 1;
+                    next Y if ($tmp_base ne $flow_base);
+                    $probe_maps[$_]->[$x]->[$y]->[1] += $emulate ? 1 : -1;
+                }
+
+                push @xs, $x_offset + $x;
+                push @ys, $y_offset + $y;
+            }
+        }
+    }
+        
+    if (@xs > 0) {
+        my $ret = $img->setpixel(x => \@xs, y=> \@ys, color => $colors[1]);
+        if (! $ret) {
+            print "ERROR: ", $img->errstr, "\n";
+        }
+    }
+    #skip first flow for compatability, although I still don't understand why
+    if ($print_first || $flow > 1) {
+        $img->write(file => "$out_dir/$image_name", type => 'bmp')
+    }
+}
+
+close $display;
+close $ndf;
+
+open my $out, '>', "$out_dir/Sequence_Flow.txt";
+print {$out} 'ss', $flow_sequence;
+close $out;
+
+exit;
+
+# takes two arguments (filename and boolean indicating presence of sequence
+# names/tags) and returns reference to array of [tag,sequence] probes
+
+sub parse_probes {
+
+    my ($fn, $has_tags) = @_;
+    my @probes;
+    open(my $in, '<', $fn) or die "Error opening $fn for reading";
+    while (my $line = <$in>) {
+        $line =~ s/\r*\n$//; # cross-platform chomp
+        next if ($line =~ /^\s*$/); #ignore empty lines
+        if ($line =~ /^(\S+)\s*(.*)$/) {
+            my $seq = uc $1;
+            my $tag = defined $2 && $has_tags ? $2 : '';
+            push @probes, [$tag,$seq];
+        }
+        else {
+            die "Probe list formatting error for $fn";
+        }
+    }
+    return \@probes;
+
+}
+
+sub find_corners {
+
+    my ($img, $xshift, $yshift) = @_;
+    my @res = ();
+
+    my $w = $img->getwidth;
+    my $h = $img->getheight;
+
+    my $y = $yshift < 0 ? 0 : $h-1;
+    my $stop = $yshift < 0 ? $h : -1;
+    my @last_row;
+    push @last_row, 0 for (1..$w);
+    while ($y != $stop) {
+        my @pixels = $img->getsamples(y => $y, channels=>[0]);
+        my $x = 0;
+        while ($x < @pixels) {
+            if ($pixels[$x] > 0
+             && $pixels[$x+$xshift] == 0
+             && $last_row[$x] == 0 ) {
+                push @res, [$x,$y]
+            }
+            ++$x;
+        }
+        $y -= $yshift;
+        @last_row = @pixels;
+    }
+
+    return @res;
+
+}
+
+
+sub parse_containers {
+
+    my ($img) = @_;
+
+    my @containers;
+
+    # detect origins (upper-left of white rectangles)
+    my @ul = find_corners( $img, -1, -1);
+    my @ll   = find_corners( $img, -1,  1); 
+    my @ur   = find_corners( $img,  1, -1);
+
+    @ll = sort {$a->[0] <=> $b->[0] || $a->[1] <=> $b->[1]} @ll;
+    @ur = sort {$a->[1] <=> $b->[1] || $a->[0] <=> $b->[0]} @ur;
+
+    # calculate container dimensions
+    for (0..$#ul) {
+        my ($x,$y) = @{ $ul[$_] };
+        my @row = grep {$_->[1] == $y} @ur;
+        my $i = 0;
+        my $ur_x = $row[$i]->[0];
+        while ($ur_x < $x) {
+            $ur_x = $row[++$i]->[0];
+        }
+        my $width = $ur_x - $x + 1;
+
+        my @col = grep {$_->[0] == $x} @ll;
+        $i = 0;
+        my $ll_y = $col[$i]->[1];
+        while ($ll_y < $y) {
+            $ll_y = $col[++$i]->[1];
+        }
+        my $height = $ll_y - $y + 1;
+        push @containers, [$x, $y, $width, $height];
+
+    }
+
+    return @containers;
+
+}
+
+sub parse_fiducials {
+
+    my ($img) = @_;
+    my @fiducials;
+
+    my $w = $img->getwidth;
+    my $h = $img->getheight;
+
+    my $y = 0;
+    while ($y < $h) {
+        my @pixels = $img->getsamples(y => $y, channels=>[0]);
+        my $x = 0;
+        while ($x < @pixels) {
+            push @fiducials, [$x,$y]
+                if ($pixels[$x] > 0);
+            ++$x;
+        }
+        ++$y;
+    }
+    return @fiducials;
+
+}
+
+
+__END__
+
+=head1 NAME
+
+maskmaker - generate MAS control files
+
+=head1 SYNOPSIS
+
+maskmaker --config F<config.xml> --out F<output_dir> [--option value]
+
+=head1 DESCRIPTION
+
+B<maskmaker> is a command-line program for generating input files to a
+maskless array synthesizer. It is intended as a replacement for the MaskGen
+software package which appears to have a number of limitations. It also
+changes several quirks of the original software to make for a more
+intuitive experience.
+
+=head1 OPTIONS
+
+=head2 Mandatory
+
+=over 4
+
+=item B<--config> F<filename>
+
+Path to XML configuration file (see description of format below)
+
+=item B<--out> F<filename>
+
+Path to output directory (will confirm overwrite if exists)
+
+=back
+
+=head2 Optional
+
+=over 4
+
+=item B<--flow> I<flow string>
+
+Force a specific flow pattern (primarily used for debugging purposes)
+
+=item B<--emulate>
+
+Turn on 'quirks mode' for backward compatibility (see full description below)
+
+=item B<--verbose>
+
+Print detailed status messages
+
+=item B<--help>
+
+Print manpage and exit
+
+=item B<--version>
+
+Print version string and exit
+
+=back
+
+=head1 CONFIGURATION
+
+The primary input to the program is a configuration file in XML format. It
+consists of a series of simple elements wrapped in a C<<ChipInfo>> element,
+all of which are mandatory. The exact XSD schema is documented elsewhere, but
+a description of all elements follows.  All element tags and enumerated
+options are case-sensitive. All boolean values should be specified as 'Yes/No'
+(case sensitive).
+
+=over 4
+
+=item B<Title> I<string>
+
+A user-defined title for the chip (avoid whitespace - will be used primarily
+in the NDF output)
+
+=item B<ChipSize> I<enumerated_string>
+
+Defines the resolution of the synthesizer DMD (possible values: XGA)
+
+=item B<ExposureTime> I<integer>
+
+Sets the exposure time to use for each flow (must be greater than zero).
+
+=item B<Linker> I<string>
+
+Residues added to the beginning of each probe (should only use characters that
+the MAS control software will understand, e.g. ATCG or others, but this is
+currently not strictly checked)
+
+=item B<ExtendedMode> I<boolean>
+
+Defines where residues other than A,T,G or C are used in the design
+
+=item B<ExtendedChar> I<string>
+
+String of possible extended residues to be used if <ExtendedMode> is set to
+'Yes'
+
+=item B<Fiducial> I<boolean>
+
+Defines whether fiducial markings are used on the chip
+
+=item B<FiducialSequence> I<string>
+
+If <Fiducial> is set to 'Yes', defines the fiducial probe sequence to be
+synthesized at all spots on the fiducial mask (specified as 5'->3' unless
+'emulate' mode is turned on, in which case it is specified as 3'->5')
+
+=item B<IsFiducialImage> I<boolean>
+
+Defines whether the content of <FiducialData> is a filename for a fiducial
+image mask (Yes) or an XML representation of the fiducial points (No)
+(currently only image masks are supported, so must be set to 'Yes')
+
+=item B<FiducialData> I<string>
+
+If <IsFiducialImage> is set to 'Yes', gives the path to the fiducial image
+mask. This file should be a bitmap of the same resolution as the DMD where
+background is black and fiducial spots are set to white. If <IsFiducialImage>
+is set to 'No', contains an XML representation of the fiducial spots
+(currently not supported).
+
+=item B<Main> I<string>
+
+Gives the path to the container image mask. This file should be a bitmap of the
+same resolution as the DMD where background is black and containers are
+contiguous regions of white.
+
+=item B<ContainerName> I<string>
+
+Defines a prefix to use for container names is the NDF file (an
+autoincremented integer will be appended for each container)
+
+=item B<Pattern> I<enumerated_string>
+
+Defines the spacing to use when laying out probes. Possible values are '1:1',
+'1:2', or '1:4'. The '1:1' pattern uses all available spots in each container,
+the '1:2' pattern uses every other spot in a checkerboard arrangement', and the
+'1:4' pattern leaves a border of empty space around each probe.
+
+=item B<SeqType> I<enumerated_string>
+
+Defines the type of input specified in <Sequence>. Possible values are 'Text',
+'File', 'MFile', or 'File2'.
+
+=over 4
+
+=item B<Text> I<string>
+
+A single probe sequence to be used on all open spots of the chip
+
+=item B<File> I<string>
+
+Path to a file containing probe sequences (optionally followed by
+tab-separated IDs), with exactly one probe sequence per container. Each
+container will be filled with the same probe sequence.
+
+=item B<MFile> I<string>
+
+Path to a file containing filenames, exactly one per container, each of which
+contains probe sequences (optionally followed by tab-separated IDs) to be used
+in that container
+
+=item B<File2> I<string>
+
+A file containing any number of probe sequences (optionally followed by
+tab-separated IDs) which will be re-used to fill each of the containers (i.e.
+each container will have an identical layout, assuming they are the same
+size).
+
+=back
+
+=item B<Sequence> I<string>
+
+Defines the probe sequences based on the value of <SeqType>
+
+=item B<SeqTag> I<boolean>
+
+Defines whether or not to try to read tab-separated probe IDs from the contents of
+<Sequence> (for File, MFile, and File2 <SeqType>s)
+
+=item B<FillContainer> I<boolean>
+
+For MFile and File2 <SeqType>s, defines whether or not to re-use probe
+sequences if there are fewer probe sequences provided than available spots in
+the container
+
+=item B<Randomize> I<boolean>
+
+For MFile and File2 <SeqType>s, defines whether or not to randomize probe
+order in the containers. For the 'File2' <SeqType>, probe order is only
+randomized once and is identical for each container.
+
+=back
+
+=head1 DIAGNOSTICS
+
+=over 4
+
+=item C<Config file required>, C<Output directory required>
+
+Parameters specifying paths to the configuration file and output directory are
+mandatory, and either were omitted or the paths specified were not found or
+not valid.
+
+=item C<The following errors were found when validating the config file...>
+
+The configuration file provided did not conform to the schema and needs to be
+fixed. The reported errors will hopefully provide some clue as to where the
+XML is incorrect.
+
+=item C<Invalid pattern specified in config file>
+
+The <Pattern> element did not specify a valid layout type. Valid values are
+'1:1', '1:2', and '1:4'.
+
+=item C<Missing container mask>, C<Missing fiducial mask>
+
+The image masks for the fiducials and containers on the chip were either not
+specified in the XML config or not found/readable on disk. Check the
+configuration file and make sure the images are present and readable. Check
+that paths in the configuration file are either absolute or relative to the
+location of the configuration file (not necessarily the current working
+directory)
+
+=item C<Mask size mismatch>
+
+The container mask and fiducial masks specified were of different dimensions,
+which is not allowed.
+
+=item C<Probe count doesn't match container count for SeqType=File>
+
+The 'File' <SeqType> requires exactly one probe sequence per container. Check
+the configuration file, the probe sequence file, and the container mask.
+
+=item C<Too (few|many) filenames for SeqType=MFile>
+
+The 'MFile' <SeqType> requires exactly one filename per container. Check
+the configuration file, the file of filenames, and the container mask.
+
+=back
+
+=head1 EXAMPLES
+
+=head2 Command line usage
+
+The simplest usage:
+
+C<maskmaker --config chip1.xml --out design1>
+
+Force a specific flow:
+
+C<maskmaker --config chip1.xml --out design1 --flow TTTTAGAATAGACAAGTAGAATCA>
+
+Use emulation mode:
+
+C<maskmaker --config 3_to_5.xml --out design2>
+
+=head2 Configuration file
+
+An example configuration file:
+
+    <?xml version="1.0" encoding="utf-8"?>
+    <ChipInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:noNamespaceSchemaLocation="mask_gen.xsd">
+        <Title>test_chip_1</Title>
+        <ChipSize>XGA</ChipSize>
+        <ExposureTime>90</ExposureTime>
+        <Linker>TTTTTTT</Linker>
+        <ExtendedMode>No</ExtendedMode>
+        <ExtendedChar>1234567890WXYZ</ExtendedChar>
+        <Fiducial>Yes</Fiducial>
+        <FiducialSequence>ATTCGCGTGACCGTGTAC</FiducialSequence>
+        <IsFiducialImage>Yes</IsFiducialImage>
+        <FiducialData>fiducial.png</FiducialData>
+        <Main>layout.png</Main>
+        <ContainerName>TestChip</ContainerName>
+        <Pattern>1:2</Pattern>
+        <SeqType>File2</SeqType>
+        <Sequence>probes.txt</Sequence>
+        <SeqTag>No</SeqTag>
+        <FillContainer>Yes</FillContainer>
+        <Randomize>No</Randomize>
+    </ChipInfo>
+
+
+=head1 CAVEATS AND BUGS
+
+It is critical to understand and use the '--emulate' flag properly. The
+previous software tool (MaskGen) expected probe sequences in 3' -> 5'
+orientation, which is the order in which the probes are synthesized on-chip
+with the current chemistry but is at odds with the general convention among
+biologists of writing DNA sequences 5'->3' when not specifically labeled
+otherwise. Normally B<maskmaker> expects all probe sequences to be in the
+5'->3' orientation, but if '--emulate' is used it expects 3'->5' sequences.
+
+Essentially, 'emulate' mode can be used on existing input files and should
+produce output identical (bit by bit) to that produced by MaskGen. If you are
+working on a new design, it is recommended to avoid 'emulate' mode and input
+probes sequences (as well as the fiducial sequence in the config file) as
+5'->3'.
+
+=head1 AUTHOR
+
+Jeremy Volkening
+
+=head1 COPYRIGHT AND LICENSE
+
+Copyright 2014 Jeremy Volkening, Sussman Laboratory, University of
+Wisconsin-Madison
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+details.
+
+You should have received a copy of the GNU General Public License along with
+this program.  If not, see <http://www.gnu.org/licenses/>.
+
+=cut
+

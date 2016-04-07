@@ -1,0 +1,263 @@
+NAME
+    maskmaker - generate MAS control files
+
+SYNOPSIS
+    maskmaker --config config.xml --out output_dir [--option value]
+
+DESCRIPTION
+    maskmaker is a command-line program for generating input files to a
+    maskless array synthesizer. It is intended as a replacement for the
+    MaskGen software package which appears to have a number of limitations.
+    It also changes several quirks of the original software to make for a
+    more intuitive experience.
+
+OPTIONS
+  Mandatory
+    --config filename
+        Path to XML configuration file (see description of format below)
+
+    --out filename
+        Path to output directory (will confirm overwrite if exists)
+
+  Optional
+    --flow *flow string*
+        Force a specific flow pattern (primarily used for debugging
+        purposes)
+
+    --emulate
+        Turn on 'quirks mode' for backward compatibility (see full
+        description below)
+
+    --verbose
+        Print detailed status messages
+
+    --help
+        Print manpage and exit
+
+    --version
+        Print version string and exit
+
+CONFIGURATION
+    The primary input to the program is a configuration file in XML format.
+    It consists of a series of simple elements wrapped in a "<ChipInfo">
+    element, all of which are mandatory. The exact XSD schema is documented
+    elsewhere, but a description of all elements follows. All element tags
+    and enumerated options are case-sensitive. All boolean values should be
+    specified as 'Yes/No' (case sensitive).
+
+    Title *string*
+        A user-defined title for the chip (avoid whitespace - will be used
+        primarily in the NDF output)
+
+    ChipSize *enumerated_string*
+        Defines the resolution of the synthesizer DMD (possible values: XGA)
+
+    ExposureTime *integer*
+        Sets the exposure time to use for each flow (must be greater than
+        zero).
+
+    Linker *string*
+        Residues added to the beginning of each probe (should only use
+        characters that the MAS control software will understand, e.g. ATCG
+        or others, but this is currently not strictly checked)
+
+    ExtendedMode *boolean*
+        Defines where residues other than A,T,G or C are used in the design
+
+    ExtendedChar *string*
+        String of possible extended residues to be used if <ExtendedMode> is
+        set to 'Yes'
+
+    Fiducial *boolean*
+        Defines whether fiducial markings are used on the chip
+
+    FiducialSequence *string*
+        If <Fiducial> is set to 'Yes', defines the fiducial probe sequence
+        to be synthesized at all spots on the fiducial mask (specified as
+        5'->3' unless 'emulate' mode is turned on, in which case it is
+        specified as 3'->5')
+
+    IsFiducialImage *boolean*
+        Defines whether the content of <FiducialData> is a filename for a
+        fiducial image mask (Yes) or an XML representation of the fiducial
+        points (No) (currently only image masks are supported, so must be
+        set to 'Yes')
+
+    FiducialData *string*
+        If <IsFiducialImage> is set to 'Yes', gives the path to the fiducial
+        image mask. This file should be a bitmap of the same resolution as
+        the DMD where background is black and fiducial spots are set to
+        white. If <IsFiducialImage> is set to 'No', contains an XML
+        representation of the fiducial spots (currently not supported).
+
+    Main *string*
+        Gives the path to the container image mask. This file should be a
+        bitmap of the same resolution as the DMD where background is black
+        and containers are contiguous regions of white.
+
+    ContainerName *string*
+        Defines a prefix to use for container names is the NDF file (an
+        autoincremented integer will be appended for each container)
+
+    Pattern *enumerated_string*
+        Defines the spacing to use when laying out probes. Possible values
+        are '1:1', '1:2', or '1:4'. The '1:1' pattern uses all available
+        spots in each container, the '1:2' pattern uses every other spot in
+        a checkerboard arrangement', and the '1:4' pattern leaves a border
+        of empty space around each probe.
+
+    SeqType *enumerated_string*
+        Defines the type of input specified in <Sequence>. Possible values
+        are 'Text', 'File', 'MFile', or 'File2'.
+
+        Text *string*
+            A single probe sequence to be used on all open spots of the chip
+
+        File *string*
+            Path to a file containing probe sequences (optionally followed
+            by tab-separated IDs), with exactly one probe sequence per
+            container. Each container will be filled with the same probe
+            sequence.
+
+        MFile *string*
+            Path to a file containing filenames, exactly one per container,
+            each of which contains probe sequences (optionally followed by
+            tab-separated IDs) to be used in that container
+
+        File2 *string*
+            A file containing any number of probe sequences (optionally
+            followed by tab-separated IDs) which will be re-used to fill
+            each of the containers (i.e. each container will have an
+            identical layout, assuming they are the same size).
+
+    Sequence *string*
+        Defines the probe sequences based on the value of <SeqType>
+
+    SeqTag *boolean*
+        Defines whether or not to try to read tab-separated probe IDs from
+        the contents of <Sequence> (for File, MFile, and File2 <SeqType>s)
+
+    FillContainer *boolean*
+        For MFile and File2 <SeqType>s, defines whether or not to re-use
+        probe sequences if there are fewer probe sequences provided than
+        available spots in the container
+
+    Randomize *boolean*
+        For MFile and File2 <SeqType>s, defines whether or not to randomize
+        probe order in the containers. For the 'File2' <SeqType>, probe
+        order is only randomized once and is identical for each container.
+
+DIAGNOSTICS
+    "Config file required", "Output directory required"
+        Parameters specifying paths to the configuration file and output
+        directory are mandatory, and either were omitted or the paths
+        specified were not found or not valid.
+
+    "The following errors were found when validating the config file..."
+        The configuration file provided did not conform to the schema and
+        needs to be fixed. The reported errors will hopefully provide some
+        clue as to where the XML is incorrect.
+
+    "Invalid pattern specified in config file"
+        The <Pattern> element did not specify a valid layout type. Valid
+        values are '1:1', '1:2', and '1:4'.
+
+    "Missing container mask", "Missing fiducial mask"
+        The image masks for the fiducials and containers on the chip were
+        either not specified in the XML config or not found/readable on
+        disk. Check the configuration file and make sure the images are
+        present and readable. Check that paths in the configuration file are
+        either absolute or relative to the location of the configuration
+        file (not necessarily the current working directory)
+
+    "Mask size mismatch"
+        The container mask and fiducial masks specified were of different
+        dimensions, which is not allowed.
+
+    "Probe count doesn't match container count for SeqType=File"
+        The 'File' <SeqType> requires exactly one probe sequence per
+        container. Check the configuration file, the probe sequence file,
+        and the container mask.
+
+    "Too (few|many) filenames for SeqType=MFile"
+        The 'MFile' <SeqType> requires exactly one filename per container.
+        Check the configuration file, the file of filenames, and the
+        container mask.
+
+EXAMPLES
+  Command line usage
+    The simplest usage:
+
+    "maskmaker --config chip1.xml --out design1"
+
+    Force a specific flow:
+
+    "maskmaker --config chip1.xml --out design1 --flow
+    TTTTAGAATAGACAAGTAGAATCA"
+
+    Use emulation mode:
+
+    "maskmaker --config 3_to_5.xml --out design2"
+
+  Configuration file
+    An example configuration file:
+
+        <?xml version="1.0" encoding="utf-8"?>
+        <ChipInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                xsi:noNamespaceSchemaLocation="mask_gen.xsd">
+            <Title>test_chip_1</Title>
+            <ChipSize>XGA</ChipSize>
+            <ExposureTime>90</ExposureTime>
+            <Linker>TTTTTTT</Linker>
+            <ExtendedMode>No</ExtendedMode>
+            <ExtendedChar>1234567890WXYZ</ExtendedChar>
+            <Fiducial>Yes</Fiducial>
+            <FiducialSequence>ATTCGCGTGACCGTGTAC</FiducialSequence>
+            <IsFiducialImage>Yes</IsFiducialImage>
+            <FiducialData>fiducial.png</FiducialData>
+            <Main>layout.png</Main>
+            <ContainerName>TestChip</ContainerName>
+            <Pattern>1:2</Pattern>
+            <SeqType>File2</SeqType>
+            <Sequence>probes.txt</Sequence>
+            <SeqTag>No</SeqTag>
+            <FillContainer>Yes</FillContainer>
+            <Randomize>No</Randomize>
+        </ChipInfo>
+
+CAVEATS AND BUGS
+    It is critical to understand and use the '--emulate' flag properly. The
+    previous software tool (MaskGen) expected probe sequences in 3' -> 5'
+    orientation, which is the order in which the probes are synthesized
+    on-chip with the current chemistry but is at odds with the general
+    convention among biologists of writing DNA sequences 5'->3' when not
+    specifically labeled otherwise. Normally maskmaker expects all probe
+    sequences to be in the 5'->3' orientation, but if '--emulate' is used it
+    expects 3'->5' sequences.
+
+    Essentially, 'emulate' mode can be used on existing input files and
+    should produce output identical (bit by bit) to that produced by
+    MaskGen. If you are working on a new design, it is recommended to avoid
+    'emulate' mode and input probes sequences (as well as the fiducial
+    sequence in the config file) as 5'->3'.
+
+AUTHOR
+    Jeremy Volkening
+
+COPYRIGHT AND LICENSE
+    Copyright 2014 Jeremy Volkening, Sussman Laboratory, University of
+    Wisconsin-Madison
+
+    This program is free software: you can redistribute it and/or modify it
+    under the terms of the GNU General Public License as published by the
+    Free Software Foundation, either version 3 of the License, or (at your
+    option) any later version.
+
+    This program is distributed in the hope that it will be useful, but
+    WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General
+    Public License for more details.
+
+    You should have received a copy of the GNU General Public License along
+    with this program. If not, see <http://www.gnu.org/licenses/>.
+

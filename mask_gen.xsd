@@ -1,0 +1,72 @@
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+<xs:element name="ChipInfo">
+    <xs:complexType>
+        <xs:all>
+            <xs:element name="Title" type="xs:string" />
+            <xs:element name="ChipSize" type="chip_size" />
+            <xs:element name="ExposureTime">
+                <xs:simpleType>
+                    <xs:restriction base="xs:integer">
+                        <xs:minInclusive value="0" />
+                    </xs:restriction>
+                </xs:simpleType>
+            </xs:element>
+            <xs:element name="Linker" type="allowed_flows" />
+            <xs:element name="ExtendedMode" type="yes_no" />
+            <xs:element name="ExtendedChar" type="allowed_flows" />
+            <xs:element name="Fiducial" type="yes_no" />
+            <xs:element name="FiducialSequence" type="allowed_flows" />
+            <xs:element name="IsFiducialImage" type="yes_no" />
+            <xs:element name="FiducialData" type="xs:string" />
+            <xs:element name="Main" type="xs:string" />
+            <xs:element name="ContainerName" type="xs:string" />
+            <xs:element name="Pattern" type="probe_spacing" />
+            <xs:element name="SeqType" type="seq_type" />
+            <xs:element name="Sequence" type="xs:string" />
+            <xs:element name="SeqTag" type="yes_no" />
+            <xs:element name="FillContainer" type="yes_no" />
+            <xs:element name="Randomize" type="yes_no" />
+        </xs:all>
+    </xs:complexType>
+</xs:element>
+
+<xs:simpleType name="yes_no">
+    <xs:restriction base="xs:string">
+        <xs:enumeration value="Yes"/>
+        <xs:enumeration value="No"/>
+    </xs:restriction>
+</xs:simpleType>
+
+<xs:simpleType name="chip_size">
+    <xs:restriction base="xs:string">
+        <xs:enumeration value="XGA"/>
+    </xs:restriction>
+</xs:simpleType>
+
+<xs:simpleType name="allowed_flows">
+    <xs:restriction base="xs:string">
+        <xs:pattern value="([a-zA-z0-9])*" />
+    </xs:restriction>
+</xs:simpleType>
+        
+<xs:simpleType name="probe_spacing">
+    <xs:restriction base="xs:string">
+        <xs:enumeration value="1:1" />
+        <xs:enumeration value="1:2" />
+        <xs:enumeration value="1:4" />
+    </xs:restriction>
+</xs:simpleType>
+
+<xs:simpleType name="seq_type">
+    <xs:restriction base="xs:string">
+        <xs:enumeration value="Text"  />
+        <xs:enumeration value="File"  />
+        <xs:enumeration value="MFile" />
+        <xs:enumeration value="File2" />
+    </xs:restriction>
+</xs:simpleType>
+
+</xs:schema>
+

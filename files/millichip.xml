@@ -1,0 +1,22 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<ChipInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="mask_gen.xsd">
+    <Title>millichip_82</Title>
+    <ChipSize>XGA</ChipSize>
+    <ExposureTime>90</ExposureTime>
+    <Linker>TTTTT</Linker>
+    <ExtendedMode>No</ExtendedMode>
+    <ExtendedChar>1234567890WXYZ</ExtendedChar>
+    <Fiducial>Yes</Fiducial>
+    <FiducialSequence>ATTCGCGTGACCGTGTAC</FiducialSequence>
+    <IsFiducialImage>Yes</IsFiducialImage>
+    <FiducialData>fiducial.png</FiducialData>
+    <Main>layout_irreg.png</Main>
+    <ContainerName>MChip</ContainerName>
+    <Pattern>1:1</Pattern>
+    <SeqType>File2</SeqType>
+    <Sequence>1400seqs_notag.txt</Sequence>
+    <SeqTag>No</SeqTag>
+    <FillContainer>Yes</FillContainer>
+    <Randomize>No</Randomize>
+</ChipInfo>
