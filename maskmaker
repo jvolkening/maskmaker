@@ -3,7 +3,7 @@
 use strict;
 use warnings;
 
-use v5.10.1;
+use 5.012;
 
 use Cwd qw/abs_path getcwd/;
 use File::Basename;
@@ -158,12 +158,16 @@ warn "parsing probes...\n";
 
 for ($meta->{seqtype}) {
     
-    when ('Text') {
+    if (/^Text$/) {
+
         push @probe_list, uc $meta->{sequence};
         my $set = [ ['', uc $meta->{sequence}] ];
         $probe_sets[$_] = $set for (0..$#containers);
+
     }
-    when ('File') {
+
+    elsif (/^File$/) {
+
         my $fn_probes = $meta->{sequence};
         $fn_probes =~ s/^(?=[^\/\\])/$xml_path/;
         my $set = parse_probes( $fn_probes, $meta->{seqtag} );
@@ -171,8 +175,11 @@ for ($meta->{seqtype}) {
             if (scalar @{ $set } != scalar @containers);
         push @probe_list, map {$_->[1]} @{ $set };
         $probe_sets[$_] = [ $set->[$_] ] for (0..$#containers);
+
     }
-    when ('MFile') {
+
+    elsif (/^MFile$/) {
+
         my $fn_probes = $meta->{sequence};
         $fn_probes =~ s/^(?=[^\/\\])/$xml_path/;
         open my $infile, '<', $fn_probes
@@ -187,14 +194,23 @@ for ($meta->{seqtype}) {
         }
         die "Too many filesnames for SeqType=MFile"
             if (! eof $infile);
+
     }
-    when ('File2') {
+
+    elsif (/^File2$/) {
+
         my $fn_probes = $meta->{sequence};
         $fn_probes =~ s/^(?=[^\/\\])/$xml_path/;
         my $set = parse_probes( $fn_probes, $meta->{seqtag} );
         push @probe_list, map {$_->[1]} @{ $set };
         $probe_sets[$_] = $set for (0..$#containers);
+
     }
+
+    else {
+        die "ERROR: Invalid SeqType specified in config file\n";
+    }
+
 }
 
 
