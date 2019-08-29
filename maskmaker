@@ -38,7 +38,7 @@ my $print_first  = 0;
 my $help         = 0;
 
 our $PROGRAM = 'maskmaker';
-our $VERSION = '0.2a';
+our $VERSION = '0.003';
 
 GetOptions(
 
