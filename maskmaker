@@ -359,6 +359,7 @@ print {$ndf} join("\t",@headers), "\n";
 # Prepare mask directory for X3
 my $zip_dir;
 my $fh_job;
+my $fh_xml;
 if ($x3) {
 
     $zip_dir = File::Temp->newdir(CLEANUP => 0);
@@ -379,6 +380,13 @@ if ($x3) {
     say {$fh_job} JOB_HEADER;
     say {$fh_job} job_cmd('WhiteT.msk', 'T');
 
+    open $fh_xml, '>', "$out_dir/$meta->{title}.xml";
+    print {$fh_xml} xml_header( $meta->{title} );
+    print {$fh_xml} xml_cycle(
+        1,
+        'T',
+    );
+
 }
 
 FLOW:
@@ -391,6 +399,12 @@ for my $flow (1..length($flow_sequence)) {
    
     if ($x3) {
         say {$fh_job} job_cmd($mask_name, $flow_base);
+        print {$fh_xml} xml_cycle(
+            $flow+1,
+            $flow_base,
+            $mask_name
+        );
+
     }
     #skip first flow for compatability, although I still don't understand why
     elsif ($print_first || $flow > 1) {
@@ -508,15 +522,31 @@ for my $flow (1..length($flow_sequence)) {
 
 }
 
-close $ndf;
-close $display if (defined $display);
-close $fh_job if (defined $fh_job);
-
-if (! $x3) {
+if ($x3) {
+    say {$fh_xml} "</Sequence>\n</MASJob>";
+    my $cwd = abs_path(getcwd());
+    my $fn_zip = abs_path( "$out_dir/$meta->{title}.zip" );
+    chdir $zip_dir;
+    my $ret = system(
+        'zip',
+        '-r',
+        $fn_zip,
+        '.'
+    );
+    die "Zipping failed: $!\n"
+        if ($ret);
+    chdir $cwd;
+}
+else {
     open my $out, '>', "$out_dir/Sequence_Flow.txt";
     print {$out} 'ss', $flow_sequence;
     close $out;
 }
+
+close $ndf;
+close $display if (defined $display);
+close $fh_job if (defined $fh_job);
+close $fh_xml if (defined $fh_xml);
 
 exit;
 
@@ -714,6 +744,60 @@ sub job_cmd {
     . ';$CParametersJobExposure Exposure Parameter=\$CParametersExposureDelivery Exposure Delivery Parameter 0000=35.000000\;\$CParametersExposureDelivery Exposure Type 0000=1\;;';
 
     return $cmd;
+
+}
+
+sub xml_header {
+
+    my ($id) = @_;
+
+    return <<"HERE"
+<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<MASJob name="$id">
+<MaskLoad>
+<LoadImplementation position="1" type="nfs_zip" path="$id.zip" />
+<LoadImplementation position="2" type="nfs_zip" path="$id.zip" />
+<LoadImplementation position="3" type="nfs_zip" path="$id.zip" />
+</MaskLoad>
+<Sequence>
+HERE
+;
+
+}
+
+sub xml_cycle {
+
+    my ($idx, $base, $mask) = @_;
+
+    my $string = "<Cycle index=\"$idx\">\n";
+
+    if (defined $mask) {
+    $string .= <<"HERE"
+<Exposure>
+<DMDMask position="1">
+<MaskBitmap>mask/$mask</MaskBitmap>
+</DMDMask>
+<DMDMask position="2">
+<MaskBitmap>mask/$mask</MaskBitmap>
+</DMDMask>
+<DMDMask position="3">
+<MaskBitmap>mask/$mask</MaskBitmap>
+</DMDMask>
+</Exposure>
+HERE
+;
+
+    }
+
+    $string .= <<"HERE"
+<Coupling>
+<Base>$base</Base>
+</Coupling>
+</Cycle>
+HERE
+;
+
+    return $string;
 
 }
 
