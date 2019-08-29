@@ -7,7 +7,9 @@ use 5.012;
 
 use Cwd qw/abs_path getcwd/;
 use File::Basename;
+use File::Copy qw/copy/;
 use File::Path qw/rmtree/;
+use File::Temp;
 use FindBin;
 use Getopt::Long;
 use Imager;
@@ -36,9 +38,10 @@ my $verbose      = 0;
 my $emulate      = 0;
 my $print_first  = 0;
 my $help         = 0;
+my $x3           = 0;
 
 our $PROGRAM = 'maskmaker';
-our $VERSION = '0.003';
+our $VERSION = '0.004';
 
 GetOptions(
 
@@ -47,10 +50,13 @@ GetOptions(
     'flow:s'     => \$flow_sequence,
     'emulate'    => \$emulate,
     'verbose'    => \$verbose,
+    'x3'         => \$x3,
     'help'       => \$help,
     'version'    => sub { print "This is $PROGRAM version $VERSION\n";exit; },
 
 );
+
+use constant JOB_HEADER => '$CParametersJobComposite Job Version Information=Job Version 2.0;';
 
 
 # basic input checking
@@ -318,7 +324,12 @@ for (0..$#containers) {
     }
 }
 
-open my $display, '>:crlf', "$out_dir/Display_Script.txt";
+my $display;
+if (! $x3) {
+    # to ensure downstream compatability, force CRLF ending (\015\012)
+    open $display, '>:crlf', "$out_dir/Display_Script.txt";
+}
+
 my $t = localtime;
 my $datestr = $t->mon . $t->mday;
 my $fn_ndf = $emulate ? "$meta->{title}_${datestr}_Design.NDF" : 'layout.ndf';
@@ -345,32 +356,47 @@ my @headers = qw/
 /;
 print {$ndf} join("\t",@headers), "\n";
 
+# Prepare mask directory for X3
+my $zip_dir;
+my $fh_job;
+if ($x3) {
+
+    $zip_dir = File::Temp->newdir(CLEANUP => 0);
+    say "ZIP: $zip_dir";
+
+    mkdir "$zip_dir/mask";
+    mkdir "$zip_dir/job";
+
+    copy "$FindBin::Bin/x3_files/WhiteT.msk" => "$zip_dir/mask";
+    copy "$FindBin::Bin/x3_files/ChipIDLocations.txt" => "$zip_dir/mask";
+
+    open my $ngp, '>', "$zip_dir/$meta->{title}.ngp";
+    say {$ngp} "\$Project Version=1.00;";
+    say {$ngp} "\$Job Filename=$meta->{title}.job;";
+    close $ngp;
+
+    open $fh_job, '>', "$zip_dir/job/$meta->{title}.job";
+    say {$fh_job} JOB_HEADER;
+    say {$fh_job} job_cmd('WhiteT.msk', 'T');
+
+}
+
 FLOW:
 for my $flow (1..length($flow_sequence)) {
     warn "flow seq $flow\n";
     my $flow_base = substr $flow_sequence, $flow-1, 1;
-    my $image_name = "MASK_${flow}_$flow_base.bmp";
-    
+    my $mask_name = $x3
+        ? sprintf("%s%04d.msk", $meta->{title}, $flow)
+        : "MASK_${flow}_$flow_base.bmp";
+   
+    if ($x3) {
+        say {$fh_job} job_cmd($mask_name, $flow_base);
+    }
     #skip first flow for compatability, although I still don't understand why
-    if ($print_first || $flow > 1) {
-        # to ensure downstream compatability, force CRLF ending (\015\012)
-        print {$display} 'display ', $image_name, " $meta->{exposuretime}\n";
+    elsif ($print_first || $flow > 1) {
+        print {$display} 'display ', $mask_name, " $meta->{exposuretime}\n";
     }
 
-    # create B/W image (will be written as BMP)
-    my $img = Imager->new(
-        xsize     => $chip_width,
-        ysize     => $chip_height,
-        channels  => 1,
-        type      => 'paletted',
-        maxcolors => 2,
-    );
-    my @colors = (Imager::Color->new(0,0,0),
-                Imager::Color->new(255,255,255),
-                );
-    $img->addcolors(colors => \@colors);
-    # set background to black
-    $img->box(filled => 1, color => $colors[0]);
 
     # fetch x,y of pixels to be painted
     my @xs;
@@ -472,25 +498,91 @@ for my $flow (1..length($flow_sequence)) {
     }
         
     if (@xs > 0) {
-        my $ret = $img->setpixel(x => \@xs, y=> \@ys, color => $colors[1]);
-        if (! $ret) {
-            print "ERROR: ", $img->errstr, "\n";
+        if ($x3) {
+            write_msk( $mask_name, \@xs, \@ys, $flow_base )
+        }
+        elsif ($print_first || $flow > 1) {
+            write_bmp( $mask_name, \@xs, \@ys )
         }
     }
-    #skip first flow for compatability, although I still don't understand why
-    if ($print_first || $flow > 1) {
-        $img->write(file => "$out_dir/$image_name", type => 'bmp')
-    }
+
 }
 
-close $display;
 close $ndf;
+close $display if (defined $display);
+close $fh_job if (defined $fh_job);
 
-open my $out, '>', "$out_dir/Sequence_Flow.txt";
-print {$out} 'ss', $flow_sequence;
-close $out;
+if (! $x3) {
+    open my $out, '>', "$out_dir/Sequence_Flow.txt";
+    print {$out} 'ss', $flow_sequence;
+    close $out;
+}
 
 exit;
+
+sub write_bmp {
+
+    my ($fn, $x, $y) = @_;
+
+    # create B/W image (will be written as BMP)
+    my $img = Imager->new(
+        xsize     => $chip_width,
+        ysize     => $chip_height,
+        channels  => 1,
+        type      => 'paletted',
+        maxcolors => 2,
+    );
+    my @colors = (
+        Imager::Color->new(0,0,0),
+        Imager::Color->new(255,255,255),
+    );
+    $img->addcolors(colors => \@colors);
+    # set background to black
+    $img->box(filled => 1, color => $colors[0]);
+
+    my $ret = $img->setpixel(x => $x, y=> $y, color => $colors[1]);
+    if (! $ret) {
+        print "ERROR: ", $img->errstr, "\n";
+    }
+    $img->write(file => "$out_dir/$fn", type => 'bmp')
+
+}
+
+sub write_msk {
+
+    my ($fn, $xs, $ys, $base) = @_;
+
+    # start with empty chip
+    my $data = 'N' x ($chip_width*$chip_height);
+
+    for (0..$#$xs) {
+        my $x = $xs->[$_];
+        my $y = $ys->[$_];
+        my $pos = $x + $y*$chip_width;
+        substr $data, $pos, 1, $base;
+    }
+
+    open my $out, '>', "$zip_dir/mask/$fn";
+    
+    my $date     = localtime()->strftime("%Y_%m_%d");
+    my $name     = basename($fn);
+    my $fmt      = 'AGCTN_VER1';
+    my $mask_num = 0;
+    my $mask_tot = 0;
+
+    say {$out} join ';',
+        "\$DATE=$date",
+        "\$MASK_NAME=$name",
+        "\$MASK_NUMBER=$mask_num",
+        "\$TOTAL_MASKS=$mask_tot",
+        "\$IMAGE_SIZE=${chip_width}x${chip_height}",
+        "\$FORMAT=$fmt",
+        '', # trailing semicolon
+    ;
+    say {$out} "\$DATA=$data";
+    close $out;
+
+}
 
 # takes two arguments (filename and boolean indicating presence of sequence
 # names/tags) and returns reference to array of [tag,sequence] probes
@@ -611,6 +703,19 @@ sub parse_fiducials {
 
 }
 
+sub job_cmd {
+
+    my ($mask, $base) = @_;
+
+    my $cmd = '$CParametersJobComposite Job Parameter Type=CParametersJobExposure;$CParametersJobBase Command is executed=1;$CParametersJobBase Delay Parameter=\$CParametersExposureDelivery Exposure Delivery Parameter 0000=0.000000\;\$CParametersExposureDelivery Exposure Type 0000=1\;;$CParametersJobExposure Mask Name='
+    . $mask
+    . ';$CParametersJobExposure DNA Base Exposure='
+    . $base
+    . ';$CParametersJobExposure Exposure Parameter=\$CParametersExposureDelivery Exposure Delivery Parameter 0000=35.000000\;\$CParametersExposureDelivery Exposure Type 0000=1\;;';
+
+    return $cmd;
+
+}
 
 __END__
 
@@ -690,7 +795,7 @@ in the NDF output)
 
 =item B<ChipSize> I<enumerated_string>
 
-Defines the resolution of the synthesizer DMD (possible values: XGA)
+Defines the resolution of the synthesizer DMD (possible values: XGA, SXGA+)
 
 =item B<ExposureTime> I<integer>
 

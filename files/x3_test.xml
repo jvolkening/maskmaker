@@ -1,0 +1,22 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<ChipInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="mask_gen.xsd">
+    <Title>x3_test_mrs</Title>
+    <ChipSize>SXGA+</ChipSize>
+    <ExposureTime>90</ExposureTime>
+    <Linker>TTTTT</Linker>
+    <ExtendedMode>No</ExtendedMode>
+    <ExtendedChar>1234567890WXYZ</ExtendedChar>
+    <Fiducial>Yes</Fiducial>
+    <FiducialSequence>TTTTTTTTTT</FiducialSequence>
+    <IsFiducialImage>Yes</IsFiducialImage>
+    <FiducialData>fiducial_full_2x_sxgap.png</FiducialData>
+    <Main>layout_test_sxgap.png</Main>
+    <ContainerName>FullC</ContainerName>
+    <Pattern>1:1</Pattern>
+    <SeqType>Text</SeqType>
+    <Sequence>TTTTTTTTTT</Sequence>
+    <SeqTag>No</SeqTag>
+    <FillContainer>Yes</FillContainer>
+    <Randomize>No</Randomize>
+</ChipInfo>

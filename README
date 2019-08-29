@@ -50,7 +50,8 @@ CONFIGURATION
         primarily in the NDF output)
 
     ChipSize *enumerated_string*
-        Defines the resolution of the synthesizer DMD (possible values: XGA)
+        Defines the resolution of the synthesizer DMD (possible values: XGA,
+        SXGA+)
 
     ExposureTime *integer*
         Sets the exposure time to use for each flow (must be greater than

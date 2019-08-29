@@ -42,6 +42,7 @@
 <xs:simpleType name="chip_size">
     <xs:restriction base="xs:string">
         <xs:enumeration value="XGA"/>
+        <xs:enumeration value="SXGA+"/>
     </xs:restriction>
 </xs:simpleType>
 
