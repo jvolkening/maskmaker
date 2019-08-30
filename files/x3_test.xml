@@ -13,7 +13,7 @@
     <FiducialData>fiducial_full_2x_sxgap.png</FiducialData>
     <Main>layout_test_sxgap.png</Main>
     <ContainerName>FullC</ContainerName>
-    <Pattern>1:1</Pattern>
+    <Pattern>1:2</Pattern>
     <SeqType>Text</SeqType>
     <Sequence>TTTTTTTTTT</Sequence>
     <SeqTag>No</SeqTag>
