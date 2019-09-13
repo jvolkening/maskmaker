@@ -8,14 +8,14 @@
     <ExtendedMode>No</ExtendedMode>
     <ExtendedChar>1234567890WXYZ</ExtendedChar>
     <Fiducial>Yes</Fiducial>
-    <FiducialSequence>TTTTTTTTTT</FiducialSequence>
+    <FiducialSequence>TTTTTTTTTTTTTTT</FiducialSequence>
     <IsFiducialImage>Yes</IsFiducialImage>
     <FiducialData>fiducial_full_2x_sxgap.png</FiducialData>
     <Main>layout_test_sxgap.png</Main>
     <ContainerName>FullC</ContainerName>
     <Pattern>1:2</Pattern>
     <SeqType>Text</SeqType>
-    <Sequence>TTTTTTTTTT</Sequence>
+    <Sequence>TTTTTTTTTTTTTTT</Sequence>
     <SeqTag>No</SeqTag>
     <FillContainer>Yes</FillContainer>
     <Randomize>No</Randomize>
