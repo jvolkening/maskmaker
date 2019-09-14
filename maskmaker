@@ -55,7 +55,7 @@ GetOptions(
     'flow:s'      => \$flow_sequence,
     'emulate'     => \$emulate,
     'verbose'     => \$verbose,
-    'x3'          => \$x3,
+    '3x'          => \$x3,
     'bitenc_ul=s' => \$bitenc_ul,
     'bitenc_lr=s' => \$bitenc_lr,
     'skip_bitenc' => \$skip_bitenc,
@@ -75,6 +75,13 @@ pod2usage( -msg => 'ERROR: Config file required' )
     if (! -f $fn_xml);
 pod2usage( -msg => 'ERROR: Output directory required' )
     if (! defined $out_dir);
+
+# turn of relevant options if not in 3X mode
+if (! $x3) {
+    $skip_bitenc = 1;
+    $write_ngp   = 0;
+    $write_job   = 0;
+}
 
 # unpack BitEncodeMirror coordinates
 my @bitenc_xs;
@@ -924,6 +931,36 @@ Turn on 'quirks mode' for backward compatibility (see full description below)
 =item B<--verbose>
 
 Print detailed status messages
+
+=item B<--3x>
+
+Generate 3X-compatible job and mask files
+
+=item B<--bitenc_ul>
+
+Specify the upper-left coordinates for the BitEncoding region of the array, in
+the form of "x,y". This option is ignored if not in 3X mode.
+
+=item B<--bitenc_lr>
+
+Specify the lower-right coordinates for the BitEncoding region of the array, in
+the form of "x,y". This option is ignored if not in 3X mode.
+
+=item B<--skip_bitenc>
+
+Skip inclusion of the BitEncoding region in the job file and mask files. If
+enabled, it allows creation of a job without these regions, which will result
+in non-fatal errors on the 3X. This option is ignored if not in 3X mode.
+
+=item B<--write_ngp>
+
+Write a *.ngp file in the output directory. Normally this file is not needed
+and is not created. This option is ignored if not in 3X mode.
+
+=item B<--write_job>
+
+Write a *.job file in the output directory. Normally this file is not needed
+and is not created. This option is ignored if not in 3X mode.
 
 =item B<--help>
 
